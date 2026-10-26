@@ -1,0 +1,32 @@
+FROM python:3.11-slim
+
+# 1. 换国内源并安装底层依赖（必须先装，否则 asyncpg 等包编译会报错）
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources || true
+RUN apt-get update && apt-get install -y gcc python3-dev libpq-dev && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/backend
+
+# 2. 先拷依赖，安装依赖（这步会被缓存，只要 txt 不变，绝不重新下载！）
+COPY requirements.txt .
+RUN pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
+
+# 3. 最后拷代码（代码变动不会触发依赖重新下载）
+COPY . .
+
+# 👇 新增：声明容器暴露 8000 端口
+EXPOSE 8000
+
+# 👇 新增这 3 行（安全加固）
+# 1. 创建一个名为 appuser 的普通用户
+RUN useradd -m -u 1000 appuser
+
+# 2. 把工作目录 /app 的所有权转交给 appuser
+# (这一步极其重要，否则普通用户没有权限写文件)
+RUN chown -R appuser:appuser /app
+
+# 3. 切换到该普通用户
+USER appuser
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+#dockerfile文件构建镜像会有本地缓存，报错，下次改为再次运行构建会有缓存
+#这就是 Docker 构建镜像的“神级特性”——分层缓存（Layer Caching）
