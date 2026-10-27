@@ -189,7 +189,7 @@ async def chat_with_agent(
     # 用户与会话隔离
     username = user_orm.username
     thread_id = req.thread_id 
-    config: RunnableConfig = {"configurable": {"thread_id": f"{username}_{thread_id}"}}
+    config: RunnableConfig = {"configurable": {"thread_id": f"{username}_{thread_id}"},"recursion_limit": 50 }  # 👈 从默认的 25 提高到 50 步
     
 
     # 查询用户模型配置，初始化配置

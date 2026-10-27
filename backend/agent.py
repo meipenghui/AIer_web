@@ -197,18 +197,18 @@ def get_or_create_agent(request:Request,user_id: int, config: Agent_Config):
                     "delete_item": True,
                     "edit_file": True,
                     # Auto-approve safe operations
-                    "execute_terminal": False,
+                    "execute_terminal": True,
                 }
             ),
             ModelCallLimitMiddleware(
-                thread_limit=10,  # 会话级限制模型调用次数
-                run_limit=5,  # 单次agent调用运行限制模型调用次数
+                thread_limit=50,  # 会话级限制模型调用次数
+                run_limit=15,  # 单次agent调用运行限制模型调用次数
                 exit_behavior="end",  # 达到限制条件优雅结束，还可以设置为 "raise_error"（直接抛出异常中断）
             ),
-            ToolCallLimitMiddleware(thread_limit=20, run_limit=10),  # 全局工具调用次数限制
+            ToolCallLimitMiddleware(thread_limit=50, run_limit=25),  # 全局工具调用次数限制
             ToolCallLimitMiddleware(
                 tool_name="bocha_websearch_tool",
-                thread_limit=10,
+                thread_limit=15,
                 run_limit=2,
             ),
             ToolErrorMiddleware(
