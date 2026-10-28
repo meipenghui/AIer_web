@@ -653,3 +653,22 @@ def search_code(keyword: str, file_pattern: str = "*") -> str:
 
 
 # print(search_code("pydantic", "*.txt"))
+# =========================================================AST（抽象语法树）====================================================================
+
+
+import ast
+
+@tool
+def get_file_outline(file_path: str) -> str:
+    """提取 Python 文件的类、函数及行号大纲，不返回具体代码内容。"""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+            
+        outline = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                outline.append(f"[{node.__class__.__name__}] {node.name} (Line {node.lineno})")
+        return "\n".join(outline)
+    except Exception as e:
+        return f"解析失败: {e}"

@@ -10,6 +10,7 @@
 | Agent 框架 | LangChain 1.3 + LangGraph 1.2（create_agent + 中间件体系） |
 | 数据库 | PostgreSQL 15（业务数据 + LangGraph Checkpoint/Store 记忆持久化） |
 | 缓存/令牌 | Redis 7（刷新令牌存储） |
+| 本地模型 | Ollama（本地大模型推理，OpenAI 兼容端点） |
 | 前端 | 原生 HTML/JS 单页应用（marked + highlight.js + DOMPurify） |
 | 部署 | Docker Compose + Nginx 反向代理 |
 
@@ -39,7 +40,7 @@
 │   └── default.conf        # 静态页面托管 + /api/ 反向代理到 backend:8000
 ├── script/
 │   └── files_system_tools.py
-└── docker-compose.yml      # 四服务编排：backend / frontend(nginx) / db(postgres) / redis
+└── docker-compose.yml      # 五服务编排：backend / frontend(nginx) / db(postgres) / redis / ollama
 ```
 
 ## 核心功能
@@ -66,8 +67,9 @@
 DEEPSEEK_API_KEY=xxx
 DEEPSEEK_URL=https://api.deepseek.com
 DATABASE_URL=postgresql+asyncpg://postgres:122122@db:5432/AIer_Agent
-MOMERY_DATABASE_URL=postgresql://postgres:122122@db:5432/AIer_Agent_Memory
+MOMERY_DATABASE_URL=postgresql://postgres:122122@db:5432/AIer_Agent_Momery
 REDIS_URL=redis://redis:6379/0
+OLLAMA_URL=http://ollama:11434/v1
 JWT_SECRET=xxx
 JWT_ALGORITHM=HS256
 MASTER_KEY=xxx
@@ -91,8 +93,16 @@ docker-compose up --build
 首次启动后需在数据库中创建记忆库（容器内执行）：
 
 ```bash
-docker exec -it my_postgres psql -U postgres -c 'CREATE DATABASE "AIer_Agent_Memory";'
+docker exec -it my_postgres psql -U postgres -c 'CREATE DATABASE "AIer_Agent_Momery";'
 ```
+
+如需使用本地 Ollama 模型，先拉取模型（以 qwen2.5:0.5b 为例）：
+
+```bash
+docker exec -it my_ollama ollama pull qwen2.5:0.5b
+```
+
+然后在前端「模型配置」中选择 `ollama`，Base URL 填 `http://ollama:11434/v1`（容器间内网地址）即可。
 
 ### 3. 访问
 
@@ -102,6 +112,7 @@ docker exec -it my_postgres psql -U postgres -c 'CREATE DATABASE "AIer_Agent_Mem
 | 后端 API（直连） | http://localhost:8081/docs |
 | PostgreSQL（宿主机调试） | localhost:5433 |
 | Redis（宿主机调试） | localhost:6378 |
+| Ollama（宿主机调试） | localhost:11434 |
 
 ## API 概览
 

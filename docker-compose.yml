@@ -15,6 +15,8 @@ services:
     dns:
       - 8.8.8.8
       - 114.114.114.114
+    env_file:
+      - ./backend/.env
     #environment:
       # 👇 把数据库和 Redis 的连接地址注入给后端环境变量
       #- DATABASE_URL=postgresql+asyncpg://postgres:122122@db:5432/AIer_DB
@@ -22,6 +24,7 @@ services:
     depends_on:
       - db
       - redis
+      - ollama
 
   frontend:
     image: nginx:alpine
@@ -62,6 +65,21 @@ services:
       - redisdata:/data     # 持久化 Redis 数据
     restart: always
 
+  # ==========================================
+  # 👇 新增 Ollama 服务（本地大模型推理）
+  # ==========================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: my_ollama
+    ports:
+      - "11433:11434"       # 暴露给宿主机，方便本地调试/拉取模型
+    volumes:
+      - ollama_data:/root/.ollama   # 持久化模型数据（下载的模型不丢）
+    restart: always
+    # 拉取模型示例（容器启动后执行）：
+    # docker exec -it my_ollama ollama pull qwen2.5:0.5b
+    # 后端容器内访问地址：http://ollama:11434 （OpenAI 兼容端点为 http://ollama:11434/v1）
+
 # ==========================================
 #docker exec -it my_postgres bash
 #psql -U postgres -d AIer_Agent
@@ -72,3 +90,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  ollama_data:

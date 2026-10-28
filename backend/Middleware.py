@@ -71,6 +71,7 @@ class DynamicMemoryMiddleware(AgentMiddleware):
         - 在你执行任务的过程中，如果发现了新的重要规范或解决了复杂的 Bug，请使用 `edit_file` 将经验追加写入该文件。
         - 当你更新 .agent/memory.md 时，必须使用追加模式（Append），绝对禁止修改文件头部的标题和已有的历史条目。
         【当前项目记忆】
+        - 测试提示词
         """
         injected_text = f"{memory_instruction}\n{memory_text}"
 
@@ -86,3 +87,105 @@ class DynamicMemoryMiddleware(AgentMiddleware):
         
         # 4. 替换请求提示词并继续
         return await handler(request.override(system_message=new_system_message))
+
+from typing import Any
+
+from langchain_core.messages import AIMessage, ToolMessage
+
+""" class CleanDanglingToolCallsMiddleware(AgentMiddleware):
+    
+    防御性中间件：防止因为历史消息中断（如死循环、超时）导致 
+    AIMessage 有 tool_calls 但缺失对应的 ToolMessage，从而引发 OpenAI 400 报错。
+    Agent 是同步调用的，就走同步方法；是异步调用的，就走异步方法。
+   
+
+    def before_model(self, state: dict, runtime: Any = None) -> dict | None:
+        同步版本（在调用大模型前执行）
+        messages = state.get("messages", [])
+        if not messages:
+            return None
+
+        # 1. 找出所有已经成功响应的 tool_call_id
+        responded_tool_call_ids = {
+            msg.tool_call_id 
+            for msg in messages 
+            if isinstance(msg, ToolMessage)
+        }
+
+        # 2. 过滤消息列表，修复悬空的 AI 消息
+        clean_messages = []
+        for msg in messages:
+            if isinstance(msg, AIMessage) and msg.tool_calls:
+                # 找出这个 AI 消息里，没有被响应的 tool_calls
+                dangling_calls = [
+                    tc for tc in msg.tool_calls 
+                    if tc["id"] not in responded_tool_call_ids
+                ]
+                
+                if dangling_calls:
+                    # 如果存在悬空的调用，我们就构造一个替代的 ToolMessage 来“顶包”
+                    # 因为直接删掉 AI 消息或清空 tool_calls 会改变上下文逻辑
+                    clean_messages.append(msg)
+                    for tc in dangling_calls:
+                        clean_messages.append(
+                            ToolMessage(
+                                tool_call_id=tc["id"],
+                                content="❌ 工具执行被中断或超时（系统自动修复了断裂的上下文）。",
+                                name=tc["name"]
+                            )
+                        )
+                    continue # 已经处理过这条 AI 消息，跳过默认追加
+
+            clean_messages.append(msg)
+
+        # 返回更新后的 state
+        return {"messages": clean_messages}
+    async def abefore_model(self, state: dict, runtime: Any = None) -> dict | None:
+        异步版本（FastAPI 和 astream_events 走这个）
+        # 逻辑与同步版本完全一致，直接调用同步方法即可（因为是纯内存操作，没有 await）
+        return self.before_model(state, runtime) """
+
+class CleanDanglingToolCallsMiddleware(AgentMiddleware):
+    """
+    暴力修复中间件：确保历史中所有 AIMessage 的 tool_calls 都有对应的 ToolMessage。
+    如果缺失，直接伪造一个报错 ToolMessage 补齐，彻底杜绝 400 报错。
+    """
+    def before_model(self, state: dict, runtime: Any = None) -> dict | None:
+        messages = state.get("messages", [])
+        if not messages:
+            return None
+
+        fixed_messages = []
+        # 记录当前已经被满足的 tool_call_id
+        satisfied_tool_ids = set()
+        
+        # 第一遍遍历：收集所有存在的 ToolMessage 的 ID
+        for msg in messages:
+            if isinstance(msg, ToolMessage):
+                satisfied_tool_ids.add(msg.tool_call_id)
+
+        # 第二遍遍历：重写消息列表
+        for msg in messages:
+            fixed_messages.append(msg)
+            
+            # 如果遇到了 AI 发的 tool_calls
+            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                for tc in msg.tool_calls:
+                    tc_id = tc.get("id") or tc.get("tool_call_id")
+                    
+                    # 如果这个 ID 没有被任何 ToolMessage 满足
+                    if tc_id and tc_id not in satisfied_tool_ids:
+                        # 立刻伪造一个 ToolMessage 塞进去！
+                        fake_tool_msg = ToolMessage(
+                            tool_call_id=tc_id,
+                            name=tc.get("name", "unknown_tool"),
+                            content="❌ 错误：该工具执行被意外中断或超时（系统已自动补齐上下文）。请勿重复尝试，请重新规划步骤或告诉用户发生错误。"
+                        )
+                        fixed_messages.append(fake_tool_msg)
+                        # 标记为已满足，防止重复补
+                        satisfied_tool_ids.add(tc_id)
+
+        return {"messages": fixed_messages}
+
+    async def abefore_model(self, state: dict, runtime: Any = None) -> dict | None:
+        return self.before_model(state, runtime)

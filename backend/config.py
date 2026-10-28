@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     MOMERY_DATABASE_URL: str
     REDIS_URL: str
+    OLLAMA_URL: str
     MASTER_KEY: str
     SECRET_KEY: str
     ALGORITHM: str

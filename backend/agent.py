@@ -1,4 +1,3 @@
-from functools import lru_cache  # functools是python标准库
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
@@ -10,7 +9,7 @@ from langchain.agents.middleware import (
     TodoListMiddleware,
     SummarizationMiddleware
 )
-from Middleware import DynamicMemoryMiddleware
+from Middleware import DynamicMemoryMiddleware,CleanDanglingToolCallsMiddleware
 from langchain_openai import ChatOpenAI
 from config import config
 from coding_tools import (
@@ -30,13 +29,44 @@ from fastapi import Request
 from system_prompt import base_sys_prompt
 from utils import decrypt_api_key
 from langchain.agents.middleware.types import ToolCallRequest
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemBackend
+from deepagents.middleware.subagents import SubAgentMiddleware
+from langchain_core.callbacks import BaseCallbackHandler
+# 1. 实例化底层的文件系统后端，把根路径指向你的工作区
+backend = FilesystemBackend(
+    root_dir="/app/workspace",  # 👈 严格锁死在这个目录
+    virtual_mode=True      # 👈 如果开启，模型看到的就是相对路径，更安全
+)
+
+# 2. 实例化中间件（它会自动把 ls, read_file 等工具注入给 Agent）
+fs_middleware = FilesystemMiddleware(backend=backend)
+
+class DebugCallback(BaseCallbackHandler):
+    def on_chat_model_start(self, serialized, messages, **kwargs):
+        # 只在大模型请求发起前打印
+        print("\n" + "="*50)
+        print("🚀 准备发送给大模型的消息列表：")
+        for msg in messages[0]: # messages 通常是二维列表
+            msg_type = msg.type
+            content = msg.content[:50] if msg.content else ""
+            tc_ids = [tc["id"] for tc in msg.tool_calls] if hasattr(msg, "tool_calls") and msg.tool_calls else []
+            print(f"[{msg_type.upper()}] content='{content}...', tool_calls={tc_ids}, tool_call_id={getattr(msg, 'tool_call_id', None)}")
+        print("="*50 + "\n")
 # 默认模型
 deepmodel = ChatOpenAI(
     model="deepseek-flash",
     api_key=config.DEEPSEEK_API_KEY,
     base_url=config.DEEPSEEK_URL,  # 👈 必须确保是这个地址，不能多写/v1
     extra_body={"thinking": {"type": "disabled"}},  # 👈 关键：关闭思考模式
+    callbacks=[DebugCallback()]
     # 不需要代理
+)
+
+# 本地 Ollama 模型（docker 内网访问 ollama 容器的 OpenAI 兼容端点）
+ollama_model = ChatOpenAI(
+    model="qwen2.5:0.5b",
+    api_key="ollama",  # 👈 Ollama 不校验 Key，但 ChatOpenAI 要求非空，占位即可
+    base_url=config.OLLAMA_URL,  # http://ollama:11434/v1
 )
 
 
@@ -55,53 +85,35 @@ async def build_default_agent(request: Request, llm=deepmodel):
         store=request.app.state.store,
         tools=[
             send_mail,
-            list_directory,
-            read_file,
-            execute_terminal,
-            create_file,
-            edit_file,
-            move_file,
-            delete_item,
-            search_code,
             bocha_websearch_tool,
         ],
         middleware=[
-            DynamicMemoryMiddleware(),
-            SummarizationMiddleware(
-                model=deepmodel,
-                trigger=("tokens", 4000),
-                keep=("messages", 20),
+            CleanDanglingToolCallsMiddleware(),  #上下文断裂处理中间件
+            SubAgentMiddleware(
+                backend=backend,
+                subagents=[
+                       {
+                           "name": "general_subagent",
+                           "description": "专门用于处理耗费大量时间或需要多步操作的后台任务（如发送邮件、大规模搜索）。主 Agent 遇到此类耗时任务时，应调用此工具派发任务。",
+                            "system_prompt": "你是一个专门负责后台复杂任务的执行者。请独立、完整地完成主 Agent 派发的任务。任务结束后，请输出一段精炼的总结报告作为返回结果。",
+                           "model": deepmodel,
+                            "tools": [send_mail,bocha_websearch_tool,],
+                        }
+                    ],
             ),
+            DynamicMemoryMiddleware(),
+            fs_middleware,
             HumanInTheLoopMiddleware(
                 interrupt_on={
                     # Require approval for sensitive operations
                     "delete_item": True,
                     "edit_file": True,
                     # Auto-approve safe operations
-                    "execute_terminal": False,
+                    "execute_terminal":True,
                 }
-            ),
-            ModelCallLimitMiddleware(
-                thread_limit=10,  # 会话级限制模型调用次数
-                run_limit=5,  # 单次agent调用运行限制模型调用次数
-                exit_behavior="end",  # 达到限制条件优雅结束，还可以设置为 "raise_error"（直接抛出异常中断）
-            ),
-            ToolCallLimitMiddleware(thread_limit=20, run_limit=10),  # 全局工具调用次数限制
-            ToolCallLimitMiddleware(
-                tool_name="bocha_websearch_tool",
-                thread_limit=10,
-                run_limit=2,
             ),
             ToolErrorMiddleware(
                 on_error  # 工具异常处理函数
-            ),  # 捕获工具执行期间抛出的异常，并将其转换为模型可见并能从中恢复的错误 ToolMessage，而不是终止智能体的运行。
-            ContextEditingMiddleware(
-                edits=[
-                ClearToolUsesEdit(
-                    trigger=100000,
-                    keep=3,
-                ),
-            ],
             ),
             TodoListMiddleware(),
         ],
@@ -174,20 +186,26 @@ def get_or_create_agent(request:Request,user_id: int, config: Agent_Config):
         store=request.app.state.store,
         tools=[
             send_mail,
-            list_directory,
-            read_file,
-            execute_terminal,
-            create_file,
-            edit_file,
-            move_file,
-            delete_item,
-            search_code,
             bocha_websearch_tool,
         ],
         middleware=[
+            SubAgentMiddleware(
+                backend=backend,
+                subagents=[
+                        {
+                            "name": "general_subagent",
+                            "description": "专门用于处理耗费大量时间或需要多步操作的后台任务（如发送邮件、大规模搜索）。主 Agent 遇到此类耗时任务时，应调用此工具派发任务。",
+                            "system_prompt": "你是一个专门负责后台复杂任务的执行者。请独立、完整地完成主 Agent 派发的任务。任务结束后，请输出一段精炼的总结报告作为返回结果。",
+                            "model": llm,
+                            "tools": [send_mail,bocha_websearch_tool,],
+                        }
+                    ],
+            ),
+            fs_middleware,
+            CleanDanglingToolCallsMiddleware(),
             DynamicMemoryMiddleware(),
             SummarizationMiddleware(
-                model=deepmodel,
+                model=ollama_model,
                 trigger=("tokens", 4000),
                 keep=("messages", 20),
             ),

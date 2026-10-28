@@ -7,13 +7,20 @@ from email.header import Header
 from config import config
 from pathlib import Path
 import httpx
+import tempfile
+import shutil
+import subprocess
+import shlex
 # 挂载进去的本地代码目录
-WORKSPACE_DIR = r"/app/workspace"
+WORKSPACE_DIR = r"/app/workspace"  
 # 单次读取最大允许的字符数（约等于 2000-3000 个 Token）
-MAX_READ_LENGTH = 10000
+MAX_READ_LENGTH = 30000
 
+# ===================================================================
+#    agent项目感知层
+# ===================================================================
 
-# 查询特定目录结构
+# 查询项目目录结构
 @tool
 def list_directory(path: str) -> str:
     """列出指定目录下的所有文件的文件路径"""
@@ -34,7 +41,7 @@ def list_directory(path: str) -> str:
     return result
 
 
-# 读取特定文件内容
+# 读取项目文件内容，字符数 <= MAX_READ_LENGTH
 @tool
 def read_file(file_path: str) -> str:
     """
@@ -76,12 +83,13 @@ def read_file(file_path: str) -> str:
         # 兜底捕获，返回友好的错误信息给大模型
         return f"❌ 读取文件时发生异常: {str(e)}"
 
+# ===================================================================
+#    agent项目编辑层
+# ===================================================================
+
+
 
 # 精准修改文件特定内容
-import tempfile
-import shutil
-
-
 @tool
 def edit_file(file_path, old_string, new_string):
     """修改文件内的特定内容，要求具备唯一性，保证唯一精准匹配，如果要删除文件内的特定内容，也可以用空白字符串覆盖原内容，达到删除效果
@@ -107,7 +115,7 @@ def edit_file(file_path, old_string, new_string):
             return f"❌ 错误：'{file_path}' 是一个文件夹，不能使用 read_file 读取。请使用 list_directory 工具查看。"
         # 1. 读取原文件
         with open(full_path, "r", encoding="utf-8") as f:
-            content = f.read()
+            content = f.read()  #原文件很大怎么办？内存承压
 
         # 2. 校验唯一性
         if content.count(old_string) != 1:
@@ -131,10 +139,12 @@ def edit_file(file_path, old_string, new_string):
         return f"❌ 修改文件时发生异常：{str(e)}"
 
 
+# ===================================================================
+#    agent项目终端执行层
+# ===================================================================
 # 终端执行命令
-import subprocess
-import shlex
 
+# 禁止高危终端命令列表
 FORBIDDEN_COMMANDS = [
     "rm -rf",
     "mkfs",
@@ -177,7 +187,7 @@ def execute_terminal(command: str) -> str:
             timeout=30,  # 最长 30 秒，防止大模型跑个死循环把服务器卡死
         )
 
-        output = result.stdout + result.stderr
+        output = result.stdout + result.stderr   #捕获终端标准输出与错误
 
         # 4. 🛑 极其重要：限制输出长度（截断）
         # 如果模型执行了一个 `cat 巨型日志.log` 或 `find /`，输出会撑爆上下文
